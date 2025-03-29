@@ -1,69 +1,83 @@
 import os
 import requests
+import logging
+import re
 from dotenv import load_dotenv
 from aiCountries import AICountries
-import re
+from typing import Optional
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # Load environment variables
 load_dotenv()
 API_KEY = os.getenv("GOOGLE_API_KEY")
 CX = os.getenv("GOOGLE_CX")
 
+# Validate API keys
+if not API_KEY or not CX:
+    logging.error("Missing API credentials. Please check your .env file.")
+    exit(1)
+
 # Initialize the AI Countries class
 ai_countries = AICountries()
 
 # Create the 'pictures' folder if it doesn't exist
-pictures_folder = os.path.join(os.getcwd(), "pictures")
-os.makedirs(pictures_folder, exist_ok=True)
+PICTURES_FOLDER = os.path.join(os.getcwd(), "pictures")
+os.makedirs(PICTURES_FOLDER, exist_ok=True)
 
-def get_first_image(query, country_code):
+def fetch_image_url(query: str) -> Optional[str]:
+    """Fetches the first image URL from Google Custom Search API."""
     search_url = "https://www.googleapis.com/customsearch/v1"
     params = {
-        "q": query + " portrait",
+        "q": f"{query} portrait",
         "cx": CX,
         "key": API_KEY,
         "searchType": "image",
         "num": 1
     }
+    try:
+        response = requests.get(search_url, params=params, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("items", [{}])[0].get("link")
+    except requests.RequestException as e:
+        logging.error(f"Failed to fetch image for {query}: {e}")
+    except KeyError:
+        logging.warning(f"Unexpected response format for {query}.")
+    return None
 
-    response = requests.get(search_url, params=params)
-    data = response.json()
-
-    if "items" in data:
-        image_url = data["items"][0]["link"]
-        print(f"Downloading image of {query} from: {image_url}")
-
-        # Get the image content
-        img_data = requests.get(image_url).content
-
-        # Define the filename using the country code
-        file_name = os.path.join(pictures_folder, f"{country_code.lower()}.jpg")
-
-        # Save the image
-        with open(file_name, 'wb') as f:
+def download_image(image_url: str, country_code: str) -> None:
+    """Downloads an image from the given URL and saves it."""
+    try:
+        img_data = requests.get(image_url, timeout=5).content
+        file_path = os.path.join(PICTURES_FOLDER, f"{country_code.lower()}.jpg")
+        with open(file_path, 'wb') as f:
             f.write(img_data)
-        print(f"Image saved as {file_name}\n")
-    else:
-        print(f"No image found for {query}.")
+        logging.info(f"Image saved as {file_path}")
+    except requests.RequestException as e:
+        logging.error(f"Error downloading image for {country_code}: {e}")
+    except IOError as e:
+        logging.error(f"File error: {e}")
+
+def process_entries(entries: list[str]) -> None:
+    """Processes each entry, extracts celebrity name and country code, and downloads images."""
+    for entry in entries:
+        logging.debug(f"Processing entry: {entry}")
+        match = re.search(r"Celebrity: (.+?) - Country Code: (\w{2})", entry)
+        if match:
+            celebrity_name, country_code = match.groups()
+            logging.info(f"Fetching image for {celebrity_name} from {country_code.upper()}")
+            image_url = fetch_image_url(celebrity_name)
+            if image_url:
+                download_image(image_url, country_code)
+            else:
+                logging.warning(f"No image found for {celebrity_name}.")
+        else:
+            logging.warning(f"Skipping invalid entry: {entry}")
 
 if __name__ == "__main__":
-    print("Generating random countries and celebrities...")
+    logging.info("Generating random countries and celebrities...")
     random_countries = ai_countries.get_random_countries()
-
-    print("\nRaw AI Output:")
-    print(random_countries)  # Debugging output
-
-    print("\nGenerated Celebrities:")
-    for entry in random_countries:
-        print(f"Processing entry: {entry}")  # Debugging output
-        try:
-            match = re.search(r"Celebrity: (.+?) - Country Code: (\w{2})", entry)
-            if match:
-                celebrity_name = match.group(1).strip()
-                country_code = match.group(2).strip()
-                print(f"{celebrity_name} from {country_code.upper()}")
-                get_first_image(celebrity_name, country_code)
-            else:
-                print(f"Skipping invalid entry: {entry}")
-        except Exception as e:
-            print(f"Error processing entry '{entry}': {e}")
+    logging.debug(f"Raw AI Output: {random_countries}")
+    process_entries(random_countries)
